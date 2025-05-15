@@ -1,0 +1,101 @@
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from bs4 import BeautifulSoup
+import pandas as pd
+import requests
+import datetime
+import os
+
+LOGIN = "login"
+HASLO = "password"
+TELEGRAM_TOKEN = "telegram_token"
+CHAT_ID = "chat_id"
+KIEROWCY = [driver_name]
+
+SKRYPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CSV_FILE = os.path.join(SKRYPT_DIR, "licznik_tras.csv")
+MIESIAC_FILE = os.path.join(SKRYPT_DIR, "miesiac.txt")
+
+dzisiaj = datetime.date.today()
+aktualny_miesiac = dzisiaj.strftime("%Y-%m")
+
+if os.path.exists(MIESIAC_FILE):
+    with open(MIESIAC_FILE, "r") as f:
+        zapisany_miesiac = f.read().strip()
+else:
+    zapisany_miesiac = ""
+
+if zapisany_miesiac != aktualny_miesiac:
+    print(f"🧹 Nowy miesiąc ({aktualny_miesiac}) – czyszczenie danych.")
+    if os.path.exists(CSV_FILE):
+        os.remove(CSV_FILE)
+    with open(MIESIAC_FILE, "w") as f:
+        f.write(aktualny_miesiac)
+
+chrome_options = Options()
+chrome_options.add_argument("--headless")
+chrome_options.add_argument("--no-sandbox")
+chrome_options.add_argument("--disable-dev-shm-usage")
+
+driver = webdriver.Chrome(options=chrome_options)
+driver.get("link_to_page")
+
+wait = WebDriverWait(driver, 10)
+login_input = wait.until(EC.presence_of_element_located((By.NAME, "UserOrEmail")))
+login_input.send_keys(LOGIN)
+password_input = driver.find_element(By.NAME, "Password")
+password_input.send_keys(HASLO + Keys.RETURN)
+
+html = driver.page_source
+driver.quit()
+
+soup = BeautifulSoup(html, 'html.parser')
+tabela = soup.find("table")
+wiersze = tabela.find_all("tr")[1:]
+
+kierowcy_dzisiaj = set()
+
+for wiersz in wiersze:
+    komorki = wiersz.find_all("th")
+    if len(komorki) >= 1:
+        kierowca = komorki[0].text.strip().lower()
+        if kierowca:
+            kierowcy_dzisiaj.add(kierowca)
+
+dzisiaj_str = dzisiaj.isoformat()
+try:
+    df = pd.read_csv(CSV_FILE, index_col=0)
+except FileNotFoundError:
+    df = pd.DataFrame(columns=KIEROWCY)
+
+nowy_wiersz = {k: 1 if k in kierowcy_dzisiaj else 0 for k in KIEROWCY}
+df.loc[dzisiaj_str] = nowy_wiersz
+df.to_csv(CSV_FILE)
+
+df_miesiac = df[df.index.str.startswith(aktualny_miesiac)]
+suma = df_miesiac.sum()
+
+wiadomosc = f"🚛 Podsumowanie tras – {dzisiaj_str}:\n"
+for kierowca in KIEROWCY:
+    liczba = int(suma.get(kierowca, 0))
+    status = "✅" if kierowca in kierowcy_dzisiaj else "❌"
+    wiadomosc += f"{status} {kierowca.capitalize()} – {liczba}\n"
+
+def send_telegram_message(token, chat_id, message):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    response = requests.post(url, data=payload)
+    if not response.ok:
+        print("Błąd podczas wysyłania wiadomości:", response.text)
+
+send_telegram_message(TELEGRAM_TOKEN, CHAT_ID, wiadomosc)
+
+print("Wysłano powiadomienie przez Telegram:\n", wiadomosc)
